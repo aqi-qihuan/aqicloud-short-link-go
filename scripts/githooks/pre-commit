@@ -1,0 +1,69 @@
+#!/bin/bash
+# pre-commit hook: 代码质量检查
+# 运行 go vet, gofmt 检查, 和可选的 golangci-lint
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+echo -e "${YELLOW}🔍 Pre-commit: 检查代码质量...${NC}"
+
+# 1. 检查是否有 Go 文件被修改
+GO_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+
+if [ -z "$GO_FILES" ]; then
+    echo -e "${GREEN}✅ 没有 Go 文件变更，跳过检查${NC}"
+    exit 0
+fi
+
+echo -e "检查的 Go 文件:"
+echo "$GO_FILES" | sed 's/^/  /'
+
+# 2. gofmt 检查
+echo -e "\n${YELLOW}📝 检查代码格式 (gofmt)...${NC}"
+UNFORMATTED=$(gofmt -l $GO_FILES 2>/dev/null || true)
+if [ -n "$UNFORMATTED" ]; then
+    echo -e "${RED}❌ 以下文件格式不符合规范:${NC}"
+    echo "$UNFORMATTED" | sed 's/^/  /'
+    echo -e "${YELLOW}💡 运行以下命令修复:${NC}"
+    echo "  gofmt -w $UNFORMATTED"
+    exit 1
+fi
+echo -e "${GREEN}✅ 代码格式检查通过${NC}"
+
+# 3. go vet 检查
+echo -e "\n${YELLOW}🔬 运行 go vet...${NC}"
+if ! go vet ./... 2>&1; then
+    echo -e "${RED}❌ go vet 检查失败，请修复后重新提交${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ go vet 检查通过${NC}"
+
+# 4. golangci-lint（如果安装了的话）
+if command -v golangci-lint &> /dev/null; then
+    echo -e "\n${YELLOW}🔧 运行 golangci-lint...${NC}"
+    if ! golangci-lint run --timeout=2m ./... 2>&1; then
+        echo -e "${RED}❌ golangci-lint 检查失败${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ golangci-lint 检查通过${NC}"
+else
+    echo -e "${YELLOW}⚠️  golangci-lint 未安装，跳过（建议安装: brew install golangci-lint）${NC}"
+fi
+
+# 5. 检查是否有敏感信息
+echo -e "\n${YELLOW}🔐 检查敏感信息...${NC}"
+SENSITIVE_PATTERNS='(password|secret|private.?key|BEGIN.*PRIVATE).*=.*["\x27][^"\x27]{8,}'
+SENSITIVE_MATCHES=$(git diff --cached --diff-filter=ACM -S "$SENSITIVE_PATTERNS" --pickaxe-regex -- '*.go' 2>/dev/null | grep '^+' | grep -v '^+++' || true)
+if [ -n "$SENSITIVE_MATCHES" ]; then
+    echo -e "${RED}⚠️  检测到可能的硬编码密钥/密码:${NC}"
+    echo "$SENSITIVE_MATCHES" | head -5 | sed 's/^/  /'
+    echo -e "${YELLOW}如果确认不是敏感信息，请使用 git commit --no-verify 跳过${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ 未发现敏感信息${NC}"
+
+echo -e "\n${GREEN}🎉 所有检查通过！${NC}"

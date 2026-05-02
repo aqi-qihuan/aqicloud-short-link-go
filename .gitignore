@@ -1,0 +1,72 @@
+# ==================== Go ====================
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binary
+*.test
+
+# Output
+*.out
+*.log
+
+# Vendor (if not committed)
+# vendor/
+
+# ==================== Build Artifacts ====================
+# Compiled service binaries at project root (prefix / to match root only)
+/gateway
+/account
+/data
+/link
+/shop
+/ai
+
+# ==================== IDE ====================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ==================== OS ====================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==================== Environment ====================
+.env
+.env.local
+.env.production
+.env.*
+!.env.example
+
+# ==================== Security ====================
+# Key files - NEVER commit secrets
+密钥*/
+*.pem
+*.key
+*.p12
+*.jks
+*secret*
+*password*
+*敏感*
+
+# ==================== Docker ====================
+# Docker data volumes
+docker-data/
+
+# ==================== Temporary ====================
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ==================== Coverage ====================
+coverage.out
+coverage.html
+coverage/
