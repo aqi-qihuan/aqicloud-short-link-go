@@ -14,6 +14,11 @@ const (
 	// DAY_TOTAL_TRAFFIC is the Redis key for daily traffic quota counter.
 	// Format: lock:traffic:day_total:accountNo
 	DAY_TOTAL_TRAFFIC = "lock:traffic:day_total:%d"
+
+	// SHORT_LINK_CACHE_KEY is the Redis key for short link redirect cache (Hash).
+	// Format: sl:redirect:{code}
+	// Fields: url, del, state
+	SHORT_LINK_CACHE_KEY = "sl:redirect:%s"
 )
 
 // FormatCheckCodeKey formats the verification code Redis key.
@@ -29,4 +34,9 @@ func FormatSubmitOrderTokenKey(accountNo int64, requestToken string) string {
 // FormatDayTotalTrafficKey formats the daily traffic Redis key.
 func FormatDayTotalTrafficKey(accountNo int64) string {
 	return fmt.Sprintf(DAY_TOTAL_TRAFFIC, accountNo)
+}
+
+// FormatShortLinkCacheKey formats the short link cache Redis key.
+func FormatShortLinkCacheKey(code string) string {
+	return fmt.Sprintf(SHORT_LINK_CACHE_KEY, code)
 }

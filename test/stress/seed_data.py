@@ -108,7 +108,9 @@ def main():
 
         original_url = f"https://example.com/test-page-{len(records)}/{random.randint(1, 999999)}"
         prefixed_url = f"{random.randint(1000000000000, 9999999999999)}&{original_url}"
-        code_inner = full_code[1:-1]  # 去掉 db_prefix 和 table_suffix
+        # code 存完整码 (含 db_prefix + table_suffix)，与路由逻辑一致
+        # RouteShortLink: first char -> DB, last char -> table
+        code_full = full_code
 
         table_name = f"short_link_{table_suffix}"
         record_id = random.randint(1000000000000000000, 9999999999999999999)
@@ -117,7 +119,7 @@ def main():
             "db_prefix": db_prefix,
             "table_name": table_name,
             "id": record_id,
-            "code": code_inner,
+            "code": code_full,
             "original_url": prefixed_url,
             "title": f"Perf Test {len(records)}",
             "domain": "g1.fit",

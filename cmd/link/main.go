@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/aqi/aqicloud-short-link-go/internal/common/alert"
+	"github.com/aqi/aqicloud-short-link-go/internal/common/constant"
 	"github.com/aqi/aqicloud-short-link-go/internal/common/interceptor"
 	"github.com/aqi/aqicloud-short-link-go/internal/common/middleware"
 	"github.com/aqi/aqicloud-short-link-go/internal/common/mq"
@@ -52,6 +55,13 @@ func main() {
 		log.Fatalf("connect link_a failed: %v", err)
 	}
 	dbs := []*gorm.DB{db0, db1, dbA}
+	// 配置连接池
+	for _, db := range dbs {
+		sqlDB, _ := db.DB()
+		sqlDB.SetMaxOpenConns(100)
+		sqlDB.SetMaxIdleConns(20)
+		sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	}
 
 	// Redis
 	rdb := redis.NewClient(&redis.Options{
@@ -94,8 +104,11 @@ func main() {
 	// Controllers
 	shortLinkCtrl := controller.NewShortLinkController(dbs, rdb, rmq, kafka)
 	linkGroupCtrl := controller.NewLinkGroupController(dbs[:2]) // ds0, ds1 only
-	domainCtrl := controller.NewDomainController(db0)            // domain table only in ds0
-	linkApiCtrl := controller.NewLinkApiController(dbs, kafka)
+	domainCtrl := controller.NewDomainController(db0)           // domain table only in ds0
+	linkApiCtrl := controller.NewLinkApiController(dbs, kafka, rdb)
+
+	// Redis 缓存预热: 批量加载热点短链到缓存
+	warmupCache(dbs, rdb)
 
 	// Gin router
 	r := gin.Default()
@@ -148,4 +161,56 @@ func getEnv(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// warmupCache batch-loads active short links into Redis cache at startup.
+// This eliminates cold-start latency for the redirect hot path.
+func warmupCache(dbs []*gorm.DB, rdb *redis.Client) {
+	if rdb == nil {
+		log.Println("[Cache] warmup skipped: Redis not available")
+		return
+	}
+
+	const warmupLimit = 200 // 每张表预热条数上限
+	ctx := context.Background()
+
+	type cacheRow struct {
+		Code        string `gorm:"column:code"`
+		OriginalUrl string `gorm:"column:original_url"`
+		Del         int    `gorm:"column:del"`
+		State       string `gorm:"column:state"`
+	}
+
+	totalCached := 0
+	tableSuffixes := []string{"0", "a"}
+	for dbIdx, db := range dbs {
+		for _, suffix := range tableSuffixes {
+			tableName := "short_link_" + suffix
+			var rows []cacheRow
+			err := db.Table(tableName).
+				Select("code, original_url, del, state").
+				Where("del = 0").
+				Limit(warmupLimit).
+				Find(&rows).Error
+			if err != nil {
+				log.Printf("[Cache] warmup query error on ds%d.%s: %v", dbIdx, tableName, err)
+				continue
+			}
+
+			// Pipeline HSET for batch write
+			pipe := rdb.Pipeline()
+			for _, row := range rows {
+				cacheKey := constant.FormatShortLinkCacheKey(row.Code)
+				pipe.HSet(ctx, cacheKey, "url", row.OriginalUrl, "del", row.Del, "state", row.State)
+				pipe.Expire(ctx, cacheKey, 10*time.Minute)
+			}
+			if _, err := pipe.Exec(ctx); err != nil {
+				log.Printf("[Cache] warmup pipeline error on ds%d.%s: %v", dbIdx, tableName, err)
+				continue
+			}
+			totalCached += len(rows)
+			log.Printf("[Cache] warmup: ds%d.%s loaded %d entries", dbIdx, tableName, len(rows))
+		}
+	}
+	log.Printf("[Cache] warmup complete: %d total entries loaded into Redis", totalCached)
 }

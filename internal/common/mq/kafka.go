@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 )
@@ -19,7 +20,8 @@ func NewKafkaProducer(brokers []string, topic string) *KafkaProducer {
 		Addr:         kafka.TCP(brokers...),
 		Topic:        topic,
 		Balancer:     &kafka.LeastBytes{},
-		BatchTimeout: 10,
+		BatchTimeout: 100 * time.Millisecond,
+		BatchSize:    100,
 		RequiredAcks: kafka.RequireOne,
 	}
 	return &KafkaProducer{writer: w}

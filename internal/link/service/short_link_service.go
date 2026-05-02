@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aqi/aqicloud-short-link-go/internal/common/constant"
 	"github.com/aqi/aqicloud-short-link-go/internal/common/enums"
 	"github.com/aqi/aqicloud-short-link-go/internal/common/model"
 	"github.com/aqi/aqicloud-short-link-go/internal/common/util"
@@ -169,6 +170,11 @@ func (s *ShortLinkService) HandleDelShortLink(eventMessage *model.EventMessage) 
 			return false
 		}
 		log.Printf("[MQ] deleted C-side short link, rows=%d", result.RowsAffected)
+		// 失效 Redis 缓存
+		if s.rdb != nil {
+			cacheKey := constant.FormatShortLinkCacheKey(delReq.Code)
+			s.rdb.Del(context.Background(), cacheKey)
+		}
 		return true
 
 	} else if messageType == string(enums.SHORT_LINK_DEL_MAPPING) {
@@ -215,6 +221,11 @@ func (s *ShortLinkService) HandleUpdateShortLink(eventMessage *model.EventMessag
 			return false
 		}
 		log.Printf("[MQ] updated C-side short link, rows=%d", result.RowsAffected)
+		// 失效 Redis 缓存
+		if s.rdb != nil {
+			cacheKey := constant.FormatShortLinkCacheKey(updateReq.Code)
+			s.rdb.Del(context.Background(), cacheKey)
+		}
 		return true
 
 	} else if messageType == string(enums.SHORT_LINK_UPDATE_MAPPING) {

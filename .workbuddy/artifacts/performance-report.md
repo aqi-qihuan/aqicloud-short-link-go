@@ -196,69 +196,116 @@ r := gin.Default()  // 带 Logger + Recovery 中间件
 
 ### 3.1 压测工具选择
 
-推荐使用 **k6** (Grafana Labs)，原因：
-- Go 编写，天然高并发
-- 支持自定义 metric 和 threshold
-- 支持场景化编排 (stages)
-- 可输出 InfluxDB + Grafana 可视化
+使用 **k6** (Grafana Labs)：
+- Go 编写，天然高并发，可驱动万级 VU
+- 自定义 metric / threshold / scenario 编排
+- JSON 输出，可接 InfluxDB + Grafana 可视化
 
-### 3.2 压测场景设计
+### 3.2 压测脚本清单
 
-#### 场景 1: 短链重定向 (核心热路径)
+| 脚本 | 用途 | 场景 |
+|------|------|------|
+| `k6_smoke.js` | 冒烟测试，10秒预检 | 单 VU，验证服务可达 |
+| `k6_redirect.js` | 核心热路径压测 | 50→200→500→1000→0 VU |
+| `k6_mixed.js` | 混合负载压测 | 80%重定向 + 10%分页 + 5%创建 + 5%详情 |
+| `k6_gateway.js` | Gateway 限流验证 | 3场景并行：正常/突发/多IP |
+| `seed_data.py` | 测试数据填充 | 分库分表精准填充 |
+| `run_bench.sh` | 一键编排脚本 | 自动化完整压测流程 |
+
+### 3.3 场景设计
+
+#### 场景 1: 短链重定向 (k6_redirect.js)
 
 ```
 目标: GET /:shortLinkCode → 302
 基准: 单实例 10,000 QPS, P99 < 50ms
 
 阶段编排:
-  1. 预热:    100 VUs, 30s (建立连接池)
-  2. 爬坡:    100→1000 VUs, 60s
-  3. 稳态:    1000 VUs, 120s (模拟高峰期)
-  4. 峰值:    1000→2000 VUs, 60s (压力测试)
-  5. 降压:    2000→0 VUs, 30s (观察恢复)
+  1. 预热:    50 VUs,  30s  (建立连接池)
+  2. 爬坡:    200 VUs, 60s
+  3. 稳态:    500 VUs, 120s (模拟高峰期)
+  4. 峰值:    1000 VUs, 60s (压力测试)
+  5. 降压:    0 VUs,   30s  (观察恢复)
 
-指标:
-  - http_req_duration P50 < 10ms, P95 < 30ms, P99 < 50ms
-  - http_req_failed < 0.1%
-  - iterations/s > 8000 (目标 QPS 的 80%)
+阈值:
+  http_req_duration  P50<10ms  P95<30ms  P99<100ms
+  http_req_failed    < 1%
+  errors             < 5%
 ```
 
-#### 场景 2: 短链创建
+特点：
+- `redirects: 0` — 不跟随 302，只测服务端响应时间
+- 动态短链码池 (与 seed_data.py 输出联动)
+- 支持 `X-Cache` header 缓存命中率追踪
+
+#### 场景 2: 混合负载 (k6_mixed.js)
 
 ```
-目标: POST /api/link/v1/add
-基准: 500 QPS, P99 < 200ms
+流量分布 (模拟真实场景):
+  80%  短链重定向  GET /:code         无认证
+  10%  分页查询    POST /link/v1/page  需 token
+  5%   创建短链    POST /link/v1/add   需 token
+  5%   短链详情    POST /link/v1/detail 需 token
 
 阶段编排:
-  1. 50 VUs 持续 120s
-  2. 递增到 200 VUs 持续 120s
+  warm(100) → ramp(300) → steady(500, 3min) → peak(800) → cool(0)
 
-指标:
-  - http_req_duration P99 < 200ms
-  - MQ 发送成功率 > 99.9%
+阈值:
+  redirect_duration  P99<50ms
+  api_duration       P99<300ms
+  http_req_failed    < 2%
 ```
 
-#### 场景 3: 混合负载 (模拟真实流量)
+特点：
+- 自动登录获取 JWT token (支持 `LOGIN_PHONE` / `LOGIN_PWD` 环境变量)
+- 按概率分配流量，模拟真实业务分布
+- 分别追踪 redirect 和 API 延迟
+
+#### 场景 3: Gateway 限流验证 (k6_gateway.js)
 
 ```
-流量比例 (模拟真实分布):
-  - 短链重定向: 80%
-  - 短链创建:   5%
-  - 分页查询:   10%
-  - 其他 API:   5%
+3 个并行场景:
+  1. normal_flow  — 50 VU 持续 60s (不应被限流)
+  2. burst_flow   — 50→300 req/s 突发 (应触发 429)
+  3. multi_ip     — 100 VU + X-Forwarded-For (独立限流)
 
-总 QPS 目标: 5,000 → 15,000 (逐步加压)
+阈值:
+  rate_limited{burst}  > 10%   (突发场景验证限流生效)
+  gateway_latency      P99<200ms
 ```
 
-### 3.3 压测前置准备
+### 3.4 压测前置准备
 
-1. **测试数据**: 在 MySQL 中预填充 10 万条短链记录
-2. **监控**: 部署 Prometheus + Grafana，监控：
-   - Go runtime metrics (goroutine 数、GC 暂停、内存)
-   - MySQL 连接数、慢查询
-   - Redis 命中率、内存
-   - RabbitMQ 队列深度、消费速率
-   - Kafka produce/consume lag
+1. **测试数据**: `python3 test/stress/seed_data.py --count 10000`
+   - 精准匹配分库分表路由: db_prefix ∈ {0,1,a}, table_suffix ∈ {0,a}
+   - `INSERT IGNORE` 幂等，可重复执行
+   - 输出样本 codes 自动注入 k6 脚本
+
+2. **监控建议** (可选):
+   - Go runtime: goroutine 数、GC 暂停、内存
+   - MySQL: 连接数、慢查询、buffer pool hit rate
+   - Redis: 命中率、内存、OPS
+   - RabbitMQ: 队列深度、消费速率、unacked
+   - Kafka: produce/consume lag
+
+### 3.5 一键执行
+
+```bash
+# 全部场景
+./test/stress/run_bench.sh
+
+# 仅重定向场景
+./test/stress/run_bench.sh redirect --count 50000
+
+# 自定义参数
+./test/stress/run_bench.sh mixed --base-url http://prod:8888 --token eyJ...
+
+# 跳过 Docker (已有环境)
+./test/stress/run_bench.sh all --skip-docker
+
+# 冒烟测试 (10 秒)
+k6 run test/stress/k6_smoke.js
+```
 
 ---
 

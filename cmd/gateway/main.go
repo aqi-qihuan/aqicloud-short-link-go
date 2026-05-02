@@ -19,9 +19,10 @@ func main() {
 	shopAddr := getEnv("SHOP_SERVICE", "http://localhost:8005")
 	aiAddr := getEnv("AI_SERVICE", "http://localhost:8006")
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
 	r.Use(middleware.CorsMiddleware())
-	r.Use(middleware.RateLimiter(100, 200)) // 100 req/s per IP, burst 200
+	r.Use(middleware.RateLimiter(1000, 2000)) // 1000 req/s per IP, burst 2000
 
 	// Route 1: /* -> link-service (short link redirect, highest priority)
 	r.Any("/:shortLinkCode", reverseProxy(linkAddr))
@@ -40,30 +41,30 @@ func main() {
 }
 
 func reverseProxy(target string) gin.HandlerFunc {
+	remote, err := url.Parse(target)
+	if err != nil {
+		log.Fatalf("invalid upstream target: %s, error: %v", target, err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(remote)
 	return func(c *gin.Context) {
-		remote, err := url.Parse(target)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "invalid upstream"})
-			return
-		}
-		proxy := httputil.NewSingleHostReverseProxy(remote)
 		proxy.ServeHTTP(c.Writer, c.Request)
 	}
 }
 
 func stripPrefixProxy(prefix string, target string) gin.HandlerFunc {
+	remote, err := url.Parse(target)
+	if err != nil {
+		log.Fatalf("invalid upstream target: %s, error: %v", target, err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(remote)
 	return func(c *gin.Context) {
-		remote, err := url.Parse(target)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "invalid upstream"})
-			return
-		}
-		c.Request.URL.Path = strings.TrimPrefix(c.Request.URL.Path, prefix)
+		originalPath := c.Request.URL.Path
+		c.Request.URL.Path = strings.TrimPrefix(originalPath, prefix)
 		if c.Request.URL.Path == "" {
 			c.Request.URL.Path = "/"
 		}
-		proxy := httputil.NewSingleHostReverseProxy(remote)
 		proxy.ServeHTTP(c.Writer, c.Request)
+		c.Request.URL.Path = originalPath // 恢复原始路径
 	}
 }
 
