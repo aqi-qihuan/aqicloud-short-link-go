@@ -39,10 +39,12 @@ Thumbs.db
 Desktop.ini
 
 # ==================== Environment ====================
+# .env with real secrets - NEVER commit
 .env
 .env.local
 .env.production
 .env.*
+# .env.example is the safe template - DO commit
 !.env.example
 
 # ==================== Security ====================
